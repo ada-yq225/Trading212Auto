@@ -1,0 +1,142 @@
+{
+  "generatedAt": "2026-07-25T12:42:14+00:00",
+  "strategy": "Cross-sectional multi-horizon momentum with inverse-volatility sizing",
+  "dataSource": "Yahoo Finance adjusted daily close, used for research only",
+  "transactionCostPerUnitTurnover": 0.001,
+  "rebalanceTradingDays": 21,
+  "availableStocks": 50,
+  "downloadErrors": [],
+  "modelSelection": {
+    "trainingPeriod": "2020-01-01 through 2022-12-31",
+    "criterion": "highest zero-rate Sharpe among three predeclared presets",
+    "trainingResults": [
+      {
+        "preset": "balanced",
+        "period": {
+          "start": "2020-01-01",
+          "end": "2022-12-31"
+        },
+        "strategy": {
+          "totalReturn": 0.3013850721643927,
+          "annualizedReturn": 0.09190733616101121,
+          "annualizedVolatility": 0.19648674215758677,
+          "sharpeZeroRate": 0.5467308646072722,
+          "maxDrawdown": 0.26364005261883827
+        },
+        "benchmarkSPY": {
+          "totalReturn": 0.23486046280110728,
+          "annualizedReturn": 0.0729506437451175,
+          "annualizedVolatility": 0.25001625247228204,
+          "sharpeZeroRate": 0.40727297353489017,
+          "maxDrawdown": 0.3371724962452114
+        },
+        "rebalances": 36,
+        "averageTurnover": 0.6826501420325864,
+        "endingEquity": 1.3004045381730032
+      },
+      {
+        "preset": "aggressive",
+        "period": {
+          "start": "2020-01-01",
+          "end": "2022-12-31"
+        },
+        "strategy": {
+          "totalReturn": 0.007261374498466866,
+          "annualizedReturn": 0.002417825108303129,
+          "annualizedVolatility": 0.20353321045807643,
+          "sharpeZeroRate": 0.11520941131982822,
+          "maxDrawdown": 0.31894431798006584
+        },
+        "benchmarkSPY": {
+          "totalReturn": 0.23486046280110728,
+          "annualizedReturn": 0.0729506437451175,
+          "annualizedVolatility": 0.25001625247228204,
+          "sharpeZeroRate": 0.40727297353489017,
+          "maxDrawdown": 0.3371724962452114
+        },
+        "rebalances": 36,
+        "averageTurnover": 0.6123704726874458,
+        "endingEquity": 1.0063895121471267
+      },
+      {
+        "preset": "selective",
+        "period": {
+          "start": "2020-01-01",
+          "end": "2022-12-31"
+        },
+        "strategy": {
+          "totalReturn": -0.07492478265724023,
+          "annualizedReturn": -0.025659512998449374,
+          "annualizedVolatility": 0.16966870106388593,
+          "sharpeZeroRate": -0.0666538659678463,
+          "maxDrawdown": 0.32082740009491745
+        },
+        "benchmarkSPY": {
+          "totalReturn": 0.23486046280110728,
+          "annualizedReturn": 0.0729506437451175,
+          "annualizedVolatility": 0.25001625247228204,
+          "sharpeZeroRate": 0.40727297353489017,
+          "maxDrawdown": 0.3371724962452114
+        },
+        "rebalances": 36,
+        "averageTurnover": 0.31668275545110186,
+        "endingEquity": 0.924520172212354
+      }
+    ],
+    "chosenPreset": "balanced"
+  },
+  "validation": {
+    "preset": "balanced",
+    "period": {
+      "start": "2023-01-01",
+      "end": "2025-12-31"
+    },
+    "strategy": {
+      "totalReturn": 0.3772930718922676,
+      "annualizedReturn": 0.11339856454357511,
+      "annualizedVolatility": 0.14167243832742252,
+      "sharpeZeroRate": 0.8292639981784894,
+      "maxDrawdown": 0.1819254715144372
+    },
+    "benchmarkSPY": {
+      "totalReturn": 0.862817804511621,
+      "annualizedReturn": 0.2321295478932799,
+      "annualizedVolatility": 0.15350680407067985,
+      "sharpeZeroRate": 1.4366170941159486,
+      "maxDrawdown": 0.18755221196416647
+    },
+    "rebalances": 36,
+    "averageTurnover": 0.7601945216940504,
+    "endingEquity": 1.3760134646198605
+  },
+  "fullPeriodReference": {
+    "preset": "balanced",
+    "period": {
+      "start": "2020-01-01",
+      "end": "2025-12-31"
+    },
+    "strategy": {
+      "totalReturn": 0.7944969565062241,
+      "annualizedReturn": 0.10271735992076048,
+      "annualizedVolatility": 0.1712451533998016,
+      "sharpeZeroRate": 0.6573227348672414,
+      "maxDrawdown": 0.26364005261883827
+    },
+    "benchmarkSPY": {
+      "totalReturn": 1.29063587179549,
+      "annualizedReturn": 0.14866059549985278,
+      "annualizedVolatility": 0.20748182709810586,
+      "sharpeZeroRate": 0.7721601858375468,
+      "maxDrawdown": 0.3371724962452114
+    },
+    "rebalances": 72,
+    "averageTurnover": 0.7276613921613465,
+    "endingEquity": 1.7931448853161243
+  },
+  "limitations": [
+    "The present-day stock universe creates survivorship and selection bias.",
+    "The daily research analogue is not identical to the live intraday sampling implementation.",
+    "Yahoo data is an external research source and may contain adjustments or gaps.",
+    "Results are hypothetical, exclude taxes and spreads, and do not predict future returns."
+  ]
+}
