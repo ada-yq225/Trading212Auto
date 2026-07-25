@@ -18,6 +18,13 @@ from statistics import median
 from typing import Any
 from zoneinfo import ZoneInfo
 
+from experimental_model import (
+    ExperimentSettings,
+    ExperimentalEnsemble,
+    create_prediction_batch,
+    gate_statistics,
+    resolve_shadow_predictions,
+)
 from t212_demo import DEMO_BASE_URL, Trading212Error, make_client
 
 
@@ -29,7 +36,7 @@ STATE_FILE = OUTPUT_DIR / "state.json"
 JOURNAL_FILE = OUTPUT_DIR / "journal.jsonl"
 PID_FILE = OUTPUT_DIR / "runner.pid"
 STOP_FILE = OUTPUT_DIR / "STOP"
-STRATEGY_VERSION = "rational_momentum_v2"
+STRATEGY_VERSION = "rational_momentum_ml_v3"
 
 
 @dataclass(frozen=True)
@@ -63,6 +70,17 @@ class Config:
     cooldown_seconds: float = 300.0
     max_orders_per_day: int = 0
     snapshot_log_seconds: float = 60.0
+    experimental_enabled: bool = True
+    experimental_signal_weight: float = 0.20
+    experimental_horizon_samples: int = 15
+    experimental_minimum_history: int = 120
+    experimental_training_stride: int = 5
+    experimental_minimum_training_samples: int = 120
+    experimental_minimum_shadow_outcomes: int = 40
+    experimental_minimum_shadow_batches: int = 20
+    experimental_minimum_hit_rate: float = 0.53
+    experimental_minimum_mean_net_return: float = 0.0
+    experimental_assumed_round_trip_cost: float = 0.001
 
     @classmethod
     def load(cls, path: Path = CONFIG_FILE) -> "Config":
@@ -88,6 +106,10 @@ class Config:
                 raise ValueError("百分比参数必须在 0 和 1 之间")
         if not 0 < config.top_n:
             raise ValueError("top_n 必须大于 0")
+        if not 0 <= config.experimental_signal_weight <= 0.5:
+            raise ValueError("实验模型权重必须在 0 和 0.5 之间")
+        if not 0.5 <= config.experimental_minimum_hit_rate <= 1:
+            raise ValueError("实验模型命中率门槛必须在 0.5 和 1 之间")
         return config
 
 
@@ -352,6 +374,7 @@ class Runner:
             self.state["strategyVersion"] = STRATEGY_VERSION
             self.state["priceHistory"] = {}
             self.state["pricePeaks"] = {}
+            self.state["experimental"] = {}
             self.state["lastRebalance"] = 0
             self.state.pop("portfolioHighWatermark", None)
         self.universe_config = load_universe_config()
@@ -385,6 +408,20 @@ class Runner:
                     self.sector_by_ticker[ticker] = str(sector)
         self.state["activeUniverse"] = sorted(self.active_universe)
         self.state["scoutUniverse"] = sorted(self.scout_quantities)
+        self.experiment_settings = ExperimentSettings(
+            horizon_samples=config.experimental_horizon_samples,
+            minimum_history=config.experimental_minimum_history,
+            training_stride=config.experimental_training_stride,
+            minimum_training_samples=config.experimental_minimum_training_samples,
+            minimum_shadow_outcomes=config.experimental_minimum_shadow_outcomes,
+            minimum_shadow_batches=config.experimental_minimum_shadow_batches,
+            minimum_hit_rate=config.experimental_minimum_hit_rate,
+            minimum_mean_net_return=config.experimental_minimum_mean_net_return,
+            assumed_round_trip_cost=config.experimental_assumed_round_trip_cost,
+            prediction_interval_seconds=config.rebalance_seconds,
+            top_n=config.top_n,
+        )
+        self.experimental_model = ExperimentalEnsemble(self.experiment_settings)
         self.running = True
         self.last_snapshot_log = 0.0
         self.last_market_closed_log = 0.0
@@ -544,6 +581,82 @@ class Runner:
         self.state["portfolioHighWatermark"] = high
         return (high - total) / high if high > 0 else 0.0
 
+    def _experimental_signals(
+        self,
+        positions: list[Position],
+        now: float,
+    ) -> tuple[dict[str, float], dict[str, Any]]:
+        if not self.config.experimental_enabled:
+            return {}, {"status": "DISABLED", "approved": False}
+        experiment_state = self.state.setdefault("experimental", {})
+        histories = {
+            ticker: list(values)
+            for ticker, values in self.state.get("priceHistory", {}).items()
+            if ticker in self.price_universe
+        }
+        current_prices = {
+            position.ticker: position.unit_account_value for position in positions
+        }
+        resolve_shadow_predictions(
+            experiment_state,
+            current_prices,
+            now,
+            self.experiment_settings,
+        )
+        last_attempt = max(
+            float(experiment_state.get("lastPredictionBatch", 0)),
+            float(experiment_state.get("lastTrainingAttempt", 0)),
+        )
+        due = (
+            now - last_attempt
+            >= self.experiment_settings.prediction_interval_seconds
+        )
+        if due:
+            experiment_state["lastTrainingAttempt"] = now
+            training_samples = self.experimental_model.fit(histories)
+            predictions = self.experimental_model.predict(
+                {
+                    ticker: histories[ticker]
+                    for ticker in self.active_universe
+                    if ticker in histories
+                }
+            )
+            experiment_state["trainingSamples"] = training_samples
+            experiment_state["lastPredictions"] = predictions
+            local = datetime.fromtimestamp(now, timezone.utc).astimezone(
+                ZoneInfo("America/New_York")
+            )
+            local_minutes = local.hour * 60 + local.minute
+            if 10 * 60 <= local_minutes <= 15 * 60 + 25:
+                create_prediction_batch(
+                    experiment_state,
+                    predictions,
+                    current_prices,
+                    now,
+                    self.experiment_settings,
+                )
+        predictions = {
+            str(ticker): float(value)
+            for ticker, value in experiment_state.get("lastPredictions", {}).items()
+        }
+        gates = gate_statistics(experiment_state, self.experiment_settings)
+        training_samples = int(experiment_state.get("trainingSamples", 0))
+        if training_samples < self.experiment_settings.minimum_training_samples:
+            status = "WARMUP"
+        elif gates["approved"]:
+            status = "APPROVED"
+        else:
+            status = "SHADOW"
+        diagnostics = {
+            "status": status,
+            "trainingSamples": training_samples,
+            "predictionCount": len(predictions),
+            "pendingCount": len(experiment_state.get("pending", [])),
+            **gates,
+        }
+        experiment_state["lastDiagnostics"] = diagnostics
+        return predictions, diagnostics
+
     def _risk_exit(
         self,
         position: Position,
@@ -577,10 +690,33 @@ class Runner:
             position for position in positions if position.ticker in self.active_universe
         ]
         metrics = self._signal_metrics(active_positions)
+        experimental_predictions, experimental_diagnostics = (
+            self._experimental_signals(active_positions, now)
+        )
+        allocation_metrics = metrics
+        if experimental_diagnostics.get("approved"):
+            weight = self.config.experimental_signal_weight
+            allocation_metrics = {
+                ticker: SignalMetrics(
+                    score=(1.0 - weight) * item.score
+                    + weight * experimental_predictions.get(ticker, 0.0),
+                    short_return=item.short_return,
+                    medium_return=item.medium_return,
+                    long_return=item.long_return,
+                    volatility=item.volatility,
+                    consistency=item.consistency,
+                )
+                for ticker, item in metrics.items()
+            }
         regime, broad_return = market_regime(metrics, self.config)
         drawdown = self._drawdown(account)
         gross = gross_exposure_for_regime(regime, drawdown, self.config)
-        weights = target_weights(metrics, self.sector_by_ticker, gross, self.config)
+        weights = target_weights(
+            allocation_metrics,
+            self.sector_by_ticker,
+            gross,
+            self.config,
+        )
         total = float(account.get("totalValue") or 0)
         candidates: list[tuple[float, str, Position, float, str]] = []
         for position in active_positions:
@@ -631,7 +767,11 @@ class Runner:
             "drawdown": drawdown,
             "grossTarget": gross,
             "scores": {ticker: asdict(item) for ticker, item in metrics.items()},
+            "allocationScores": {
+                ticker: asdict(item) for ticker, item in allocation_metrics.items()
+            },
             "targetWeights": weights,
+            "experimental": experimental_diagnostics,
         }
         return sorted(candidates, key=lambda item: item[0], reverse=True), diagnostics
 
@@ -842,6 +982,14 @@ def show_status() -> int:
                 f"组合回撤 {float(diagnostics.get('drawdown') or 0):.2%}，"
                 f"目标风险仓位 {float(diagnostics.get('grossTarget') or 0):.0%}"
             )
+            experimental = diagnostics.get("experimental") or {}
+            if experimental:
+                print(
+                    f"实验模型：{experimental.get('status')}，"
+                    f"训练样本 {experimental.get('trainingSamples', 0)}，"
+                    f"影子批次 {experimental.get('batchCount', 0)}，"
+                    f"命中率 {float(experimental.get('hitRate') or 0):.1%}"
+                )
         promoted = state.get("promotedScouts", [])
         print(f"侦察晋升：{', '.join(promoted) if promoted else '暂无'}")
         print("持仓：")

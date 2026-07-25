@@ -1,0 +1,36 @@
+{
+  "generatedAt": "2026-07-25T15:45:19+00:00",
+  "model": "50% standardized Ridge + 50% shallow histogram gradient boosting",
+  "validationProtocol": "Expanding-window monthly retraining. Each label is delayed 15 trading days, so no sample is trainable until its future outcome is known.",
+  "transactionCostPerUnitTurnover": 0.001,
+  "downloadErrors": [],
+  "validation": {
+    "period": {
+      "start": "2023-01-01",
+      "end": "2025-12-31"
+    },
+    "strategy": {
+      "totalReturn": 1.5187886194481384,
+      "annualizedReturn": 0.363392573871935,
+      "annualizedVolatility": 0.16272816004721377,
+      "sharpeZeroRate": 1.9873303846894412,
+      "maxDrawdown": 0.2222084444412134
+    },
+    "benchmarkSPY": {
+      "totalReturn": 0.862817804511621,
+      "annualizedReturn": 0.2321295478932799,
+      "annualizedVolatility": 0.15350680407067985,
+      "sharpeZeroRate": 1.4366170941159486,
+      "maxDrawdown": 0.18755221196416647
+    },
+    "predictionBatches": 36,
+    "averageTrainingSamples": 13737.333333333334,
+    "averageTurnover": 0.9379143062026757
+  },
+  "limitations": [
+    "The current 50-stock universe creates survivorship and selection bias.",
+    "Daily historical validation is an analogue of the minute-sampled live model.",
+    "The result excludes taxes and models spreads through a fixed turnover cost.",
+    "The live model remains in shadow mode until it passes forward Demo gates."
+  ]
+}

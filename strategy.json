@@ -27,5 +27,16 @@
   "rebalance_band_pct": 0.015,
   "cooldown_seconds": 900,
   "max_orders_per_day": 0,
-  "snapshot_log_seconds": 60
+  "snapshot_log_seconds": 60,
+  "experimental_enabled": true,
+  "experimental_signal_weight": 0.20,
+  "experimental_horizon_samples": 15,
+  "experimental_minimum_history": 120,
+  "experimental_training_stride": 5,
+  "experimental_minimum_training_samples": 120,
+  "experimental_minimum_shadow_outcomes": 40,
+  "experimental_minimum_shadow_batches": 20,
+  "experimental_minimum_hit_rate": 0.53,
+  "experimental_minimum_mean_net_return": 0.0,
+  "experimental_assumed_round_trip_cost": 0.001
 }
