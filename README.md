@@ -160,3 +160,17 @@ python3 experimental_backtest.py
 ```bash
 python3 -m unittest -v
 ```
+
+## 10. 可复现量化科研框架
+
+`research_lab/` 是与实时执行隔离的研究系统，不会直接下单。它在 50 只股票和 8 个市场上下文标的上构建 64 个因果特征，使用五模型集成、嵌套 walk-forward、21 日 purge、21 日 embargo、Ledoit-Wolf 协方差和带股票/板块约束的组合优化。
+
+完整实验：
+
+```bash
+python3 run_research.py --refresh-data
+```
+
+实验会保存数据 SHA-256、解析后的配置、Python/NumPy/Pandas/SciPy/scikit-learn 版本、每次再平衡决策和每日收益审计轨迹。候选必须同时通过 Deflated Sharpe、区块 bootstrap、最大回撤和 25 bps 成本压力四项门槛，才允许进入 Demo 影子阶段；通过也不会自动获得订单影响权。
+
+当前锁定配置的 2023–2025 外样本结果与晋级结论见 `outputs/research_project/latest_report.md`。研究协议、因果边界、产物说明和已知偏差见 [RESEARCH.md](RESEARCH.md)。

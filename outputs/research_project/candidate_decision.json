@@ -1,0 +1,11 @@
+{
+  "status": "RESEARCH_ONLY",
+  "eligibleForDemoShadow": false,
+  "gates": {
+    "deflatedSharpeProbabilityAtLeast95Percent": false,
+    "bootstrapProbabilityBeatingSPYAtLeast70Percent": true,
+    "maximumDrawdownAtMost30Percent": true,
+    "sharpeAt25BpsCostAbove0Point5": true
+  },
+  "policy": "Passing permits Demo shadow observation only. It does not permit live-capital trading or immediate order influence."
+}

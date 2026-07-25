@@ -1,0 +1,55 @@
+{
+  "random_seed": 212,
+  "data_start": "2017-01-01",
+  "data_end": "2026-01-03",
+  "validation_start": "2023-01-01",
+  "validation_end": "2025-12-31",
+  "label_horizon_days": 21,
+  "rebalance_days": 21,
+  "training_stride_days": 5,
+  "minimum_history_days": 252,
+  "inner_validation_days": 252,
+  "purge_days": 21,
+  "embargo_days": 21,
+  "top_n": 8,
+  "maximum_position_weight": 0.25,
+  "maximum_sector_weight": 0.4,
+  "risk_on_gross": 0.95,
+  "neutral_gross": 0.7,
+  "risk_off_gross": 0.3,
+  "drawdown_cut": 0.1,
+  "drawdown_emergency": 0.15,
+  "base_transaction_cost_bps": 10.0,
+  "cost_scenarios_bps": [
+    5.0,
+    10.0,
+    25.0,
+    50.0
+  ],
+  "block_bootstrap_samples": 1000,
+  "block_length_days": 21,
+  "model_names": [
+    "ridge",
+    "elastic_net",
+    "hist_gradient_boosting",
+    "extra_trees",
+    "random_fourier_ridge"
+  ],
+  "context_symbols": [
+    "SPY",
+    "QQQ",
+    "IWM",
+    "HYG",
+    "TLT",
+    "GLD",
+    "UUP",
+    "^VIX"
+  ],
+  "output_directory": "outputs/research_project",
+  "cache_file": ".cache/research_ohlcv.json",
+  "notes": [
+    "Research-only data source; never used as a credential source.",
+    "Current constituent selection introduces survivorship bias.",
+    "All candidate model trials are counted for multiple-testing diagnostics."
+  ]
+}

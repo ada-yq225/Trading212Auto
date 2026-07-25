@@ -1,0 +1,12 @@
+{
+  "downloadedAt": "2026-07-25T16:02:22+00:00",
+  "source": "Yahoo Finance chart endpoint",
+  "requestedSymbols": 58,
+  "availableSymbols": 58,
+  "errors": [],
+  "sha256": "edfd3fa3c4b64d23052886c60b517c360c4f7070145770581f1c67439b86dc35",
+  "dateRange": {
+    "start": "2017-01-01",
+    "end": "2026-01-03"
+  }
+}
