@@ -1,9 +1,11 @@
+import json
 import math
 import unittest
 from datetime import datetime, timezone
 
 from auto_trader import (
     Config,
+    ROOT,
     STRATEGY_VERSION,
     SignalMetrics,
     backoff_seconds,
@@ -74,6 +76,26 @@ class StrategyTests(unittest.TestCase):
         self.assertEqual(state["promotedScouts"], ["TSM_US_EQ"])
 
         self.assertFalse(migrate_strategy_state(state, STRATEGY_VERSION))
+
+    def test_repository_uses_accelerated_demo_profile(self):
+        config = Config.load(ROOT / "strategy.json")
+        universe = json.loads(
+            (ROOT / "universe.json").read_text(encoding="utf-8")
+        )
+        self.assertEqual(config.poll_seconds, 15)
+        self.assertEqual(config.short_samples, 20)
+        self.assertEqual(config.medium_samples, 60)
+        self.assertEqual(config.long_samples, 180)
+        self.assertEqual(config.volatility_samples, 120)
+        self.assertEqual(config.rebalance_seconds, 300)
+        self.assertEqual(config.cooldown_seconds, 300)
+        self.assertEqual(config.experimental_minimum_history, 120)
+        self.assertEqual(config.experimental_minimum_training_samples, 120)
+        self.assertEqual(config.experimental_minimum_shadow_batches, 20)
+        self.assertEqual(config.experimental_minimum_shadow_outcomes, 40)
+        self.assertEqual(config.experimental_minimum_hit_rate, 0.53)
+        self.assertEqual(universe["scout_seed_interval_seconds"], 300)
+        self.assertEqual(universe["scout_interval_seconds"], 300)
 
     def test_momentum_metrics_warms_up(self):
         self.assertIsNone(momentum_metrics([100.0] * 20, self.config))
@@ -154,7 +176,7 @@ class StrategyTests(unittest.TestCase):
         self.assertEqual(len(scouts), 42)
         self.assertEqual(len(sectors), 11)
         self.assertEqual(sum(len(items) for items in sectors.values()), 50)
-        self.assertEqual(data.get("scout_seed_interval_seconds"), 900)
+        self.assertEqual(data.get("scout_seed_interval_seconds"), 300)
         self.assertEqual(data.get("scout_min_samples"), 241)
         self.assertTrue(all(0 < item["probe_quantity"] < 0.1 for item in scouts))
 

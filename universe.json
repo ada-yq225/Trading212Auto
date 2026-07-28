@@ -13,8 +13,8 @@
     "AMZN_US_EQ",
     "NFLX_US_EQ"
   ],
-  "scout_seed_interval_seconds": 900,
-  "scout_interval_seconds": 900,
+  "scout_seed_interval_seconds": 300,
+  "scout_interval_seconds": 300,
   "scout_history_samples": 300,
   "scout_min_samples": 241,
   "scout_promotion_score": 0.75,
