@@ -36,7 +36,7 @@ STATE_FILE = OUTPUT_DIR / "state.json"
 JOURNAL_FILE = OUTPUT_DIR / "journal.jsonl"
 PID_FILE = OUTPUT_DIR / "runner.pid"
 STOP_FILE = OUTPUT_DIR / "STOP"
-STRATEGY_VERSION = "rational_momentum_ml_v3"
+STRATEGY_VERSION = "rational_momentum_ml_v4_fast"
 
 
 @dataclass(frozen=True)
@@ -353,6 +353,21 @@ def load_state(config: Config) -> dict[str, Any]:
     return state
 
 
+def migrate_strategy_state(
+    state: dict[str, Any],
+    strategy_version: str,
+) -> bool:
+    if state.get("strategyVersion") == strategy_version:
+        return False
+    state["strategyVersion"] = strategy_version
+    state["priceHistory"] = {}
+    state["pricePeaks"] = {}
+    state["experimental"] = {}
+    state["lastRebalance"] = 0
+    state.pop("portfolioHighWatermark", None)
+    return True
+
+
 def load_universe_config(path: Path = UNIVERSE_FILE) -> dict[str, Any]:
     if not path.exists():
         return {}
@@ -370,13 +385,7 @@ class Runner:
         self.execute = execute
         self.client = make_client()
         self.state = load_state(config)
-        if self.state.get("strategyVersion") != STRATEGY_VERSION:
-            self.state["strategyVersion"] = STRATEGY_VERSION
-            self.state["priceHistory"] = {}
-            self.state["pricePeaks"] = {}
-            self.state["experimental"] = {}
-            self.state["lastRebalance"] = 0
-            self.state.pop("portfolioHighWatermark", None)
+        migrate_strategy_state(self.state, STRATEGY_VERSION)
         self.universe_config = load_universe_config()
         self.base_universe = {
             str(ticker) for ticker in self.universe_config.get("tickers", []) if ticker

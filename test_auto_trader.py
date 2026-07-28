@@ -4,6 +4,7 @@ from datetime import datetime, timezone
 
 from auto_trader import (
     Config,
+    STRATEGY_VERSION,
     SignalMetrics,
     backoff_seconds,
     floor_quantity,
@@ -12,6 +13,7 @@ from auto_trader import (
     load_active_universe,
     load_universe_config,
     market_regime,
+    migrate_strategy_state,
     momentum_metrics,
     sample_volatility,
     target_weights,
@@ -38,6 +40,40 @@ class StrategyTests(unittest.TestCase):
             volatility_samples=10,
             top_n=3,
         )
+
+    def test_accelerated_strategy_version(self):
+        self.assertEqual(
+            STRATEGY_VERSION,
+            "rational_momentum_ml_v4_fast",
+        )
+
+    def test_strategy_migration_resets_interval_dependent_state_once(self):
+        state = {
+            "strategyVersion": "rational_momentum_ml_v3",
+            "priceHistory": {"AMD_US_EQ": [1.0, 2.0]},
+            "pricePeaks": {"AMD_US_EQ": 2.0},
+            "experimental": {"trainingSamples": 17},
+            "lastRebalance": 123.0,
+            "portfolioHighWatermark": 5000.0,
+            "ordersToday": 17,
+            "scoutAttempts": ["AVGO_US_EQ"],
+            "promotedScouts": ["TSM_US_EQ"],
+        }
+
+        changed = migrate_strategy_state(state, STRATEGY_VERSION)
+
+        self.assertTrue(changed)
+        self.assertEqual(state["strategyVersion"], STRATEGY_VERSION)
+        self.assertEqual(state["priceHistory"], {})
+        self.assertEqual(state["pricePeaks"], {})
+        self.assertEqual(state["experimental"], {})
+        self.assertEqual(state["lastRebalance"], 0)
+        self.assertNotIn("portfolioHighWatermark", state)
+        self.assertEqual(state["ordersToday"], 17)
+        self.assertEqual(state["scoutAttempts"], ["AVGO_US_EQ"])
+        self.assertEqual(state["promotedScouts"], ["TSM_US_EQ"])
+
+        self.assertFalse(migrate_strategy_state(state, STRATEGY_VERSION))
 
     def test_momentum_metrics_warms_up(self):
         self.assertIsNone(momentum_metrics([100.0] * 20, self.config))
