@@ -95,6 +95,74 @@ class ExperimentalModelTests(unittest.TestCase):
         self.assertEqual(len(selected), 1)
         self.assertGreater(selected[0]["netReturn"], 0)
 
+    def test_experiment_settings_define_sample_interval(self):
+        settings = ExperimentSettings()
+        self.assertTrue(hasattr(settings, "sample_interval_seconds"))
+        self.assertEqual(settings.sample_interval_seconds, 60.0)
+
+    def test_shadow_resolution_uses_configured_sample_interval(self):
+        settings = ExperimentSettings(
+            horizon_samples=15,
+            sample_interval_seconds=15.0,
+            prediction_interval_seconds=0,
+        )
+        state = {}
+        create_prediction_batch(
+            state,
+            {"A": 1.0, "B": -1.0},
+            {"A": 100.0, "B": 100.0},
+            now=1000.0,
+            settings=settings,
+        )
+
+        resolve_shadow_predictions(
+            state,
+            {"A": 101.0, "B": 99.0},
+            now=1224.999,
+            settings=settings,
+        )
+        self.assertEqual(len(state["pending"]), 2)
+        self.assertEqual(len(state["outcomes"]), 0)
+
+        resolve_shadow_predictions(
+            state,
+            {"A": 101.0, "B": 99.0},
+            now=1225.0,
+            settings=settings,
+        )
+        self.assertEqual(len(state["pending"]), 0)
+        self.assertEqual(len(state["outcomes"]), 2)
+
+    def test_shadow_resolution_defaults_to_one_minute_samples(self):
+        settings = ExperimentSettings(
+            horizon_samples=15,
+            prediction_interval_seconds=0,
+        )
+        state = {}
+        create_prediction_batch(
+            state,
+            {"A": 1.0},
+            {"A": 100.0},
+            now=1000.0,
+            settings=settings,
+        )
+
+        resolve_shadow_predictions(
+            state,
+            {"A": 101.0},
+            now=1899.999,
+            settings=settings,
+        )
+        self.assertEqual(len(state["pending"]), 1)
+
+        resolve_shadow_predictions(
+            state,
+            {"A": 101.0},
+            now=1900.0,
+            settings=settings,
+        )
+        self.assertEqual(len(state["outcomes"]), 1)
+
 
 if __name__ == "__main__":
     unittest.main()

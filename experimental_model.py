@@ -33,6 +33,7 @@ FEATURE_NAMES = (
 @dataclass(frozen=True)
 class ExperimentSettings:
     horizon_samples: int = 15
+    sample_interval_seconds: float = 60.0
     minimum_history: int = 120
     training_stride: int = 5
     minimum_training_samples: int = 120
@@ -196,7 +197,9 @@ def resolve_shadow_predictions(
     pending = experiment_state.setdefault("pending", [])
     outcomes = experiment_state.setdefault("outcomes", [])
     unresolved: list[dict[str, Any]] = []
-    horizon_seconds = settings.horizon_samples * 60.0
+    horizon_seconds = (
+        settings.horizon_samples * settings.sample_interval_seconds
+    )
     for item in pending:
         if now - float(item["createdAt"]) < horizon_seconds:
             unresolved.append(item)
