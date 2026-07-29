@@ -38,5 +38,15 @@
   "experimental_minimum_shadow_batches": 20,
   "experimental_minimum_hit_rate": 0.53,
   "experimental_minimum_mean_net_return": 0.0,
-  "experimental_assumed_round_trip_cost": 0.001
+  "experimental_assumed_round_trip_cost": 0.001,
+  "experimental_prediction_interval_seconds": 225,
+  "experimental_compute_budget_seconds": 8,
+  "experimental_candidate_ids": [
+    "legacy_ensemble",
+    "robust_huber",
+    "regime_histgb",
+    "residual_momentum"
+  ],
+  "experimental_early_rejection_batches": 10,
+  "experimental_early_rejection_outcomes": 20
 }

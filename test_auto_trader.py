@@ -1,7 +1,9 @@
 import json
 import math
+import tempfile
 import unittest
 from datetime import datetime, timezone
+from pathlib import Path
 
 import auto_trader
 from auto_trader import (
@@ -83,6 +85,9 @@ class StrategyTests(unittest.TestCase):
         universe = json.loads(
             (ROOT / "universe.json").read_text(encoding="utf-8")
         )
+        self.assertTrue(
+            hasattr(config, "experimental_prediction_interval_seconds")
+        )
         self.assertEqual(config.poll_seconds, 15)
         self.assertEqual(config.short_samples, 20)
         self.assertEqual(config.medium_samples, 60)
@@ -95,8 +100,35 @@ class StrategyTests(unittest.TestCase):
         self.assertEqual(config.experimental_minimum_shadow_batches, 20)
         self.assertEqual(config.experimental_minimum_shadow_outcomes, 40)
         self.assertEqual(config.experimental_minimum_hit_rate, 0.53)
+        self.assertEqual(config.experimental_prediction_interval_seconds, 225)
+        self.assertEqual(config.experimental_compute_budget_seconds, 8)
+        self.assertEqual(
+            config.experimental_candidate_ids,
+            (
+                "legacy_ensemble",
+                "robust_huber",
+                "regime_histgb",
+                "residual_momentum",
+            ),
+        )
+        self.assertEqual(config.experimental_early_rejection_batches, 10)
+        self.assertEqual(config.experimental_early_rejection_outcomes, 20)
         self.assertEqual(universe["scout_seed_interval_seconds"], 300)
         self.assertEqual(universe["scout_interval_seconds"], 300)
+
+    def test_experimental_prediction_batches_cannot_overlap(self):
+        self.assertTrue(
+            hasattr(Config, "experimental_prediction_interval_seconds")
+        )
+        data = json.loads(
+            (ROOT / "strategy.json").read_text(encoding="utf-8")
+        )
+        data["experimental_prediction_interval_seconds"] = 224
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "strategy.json"
+            path.write_text(json.dumps(data), encoding="utf-8")
+            with self.assertRaisesRegex(ValueError, "不能短于"):
+                Config.load(path)
 
     def test_experimental_settings_use_runner_sampling_interval(self):
         config = Config(

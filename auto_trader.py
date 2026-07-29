@@ -81,10 +81,24 @@ class Config:
     experimental_minimum_hit_rate: float = 0.53
     experimental_minimum_mean_net_return: float = 0.0
     experimental_assumed_round_trip_cost: float = 0.001
+    experimental_prediction_interval_seconds: float = 225.0
+    experimental_compute_budget_seconds: float = 8.0
+    experimental_candidate_ids: tuple[str, ...] = (
+        "legacy_ensemble",
+        "robust_huber",
+        "regime_histgb",
+        "residual_momentum",
+    )
+    experimental_early_rejection_batches: int = 10
+    experimental_early_rejection_outcomes: int = 20
 
     @classmethod
     def load(cls, path: Path = CONFIG_FILE) -> "Config":
         data = json.loads(path.read_text(encoding="utf-8")) if path.exists() else {}
+        if "experimental_candidate_ids" in data:
+            data["experimental_candidate_ids"] = tuple(
+                str(item) for item in data["experimental_candidate_ids"]
+            )
         config = cls(**data)
         if not (
             2 <= config.short_samples
@@ -110,6 +124,20 @@ class Config:
             raise ValueError("实验模型权重必须在 0 和 0.5 之间")
         if not 0.5 <= config.experimental_minimum_hit_rate <= 1:
             raise ValueError("实验模型命中率门槛必须在 0.5 和 1 之间")
+        minimum_interval = (
+            config.poll_seconds * config.experimental_horizon_samples
+        )
+        if config.experimental_prediction_interval_seconds < minimum_interval:
+            raise ValueError(
+                "experimental_prediction_interval_seconds "
+                "不能短于 poll_seconds * experimental_horizon_samples"
+            )
+        if not (
+            0
+            < config.experimental_compute_budget_seconds
+            < config.poll_seconds
+        ):
+            raise ValueError("实验计算预算必须大于0且低于poll_seconds")
         return config
 
 
