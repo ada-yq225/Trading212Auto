@@ -18,12 +18,9 @@ from statistics import median
 from typing import Any
 from zoneinfo import ZoneInfo
 
-from experimental_model import (
-    ExperimentSettings,
-    ExperimentalEnsemble,
-    create_prediction_batch,
-    gate_statistics,
-    resolve_shadow_predictions,
+from experimental_model import ExperimentSettings
+from experimental_tournament import (
+    ExperimentalTournament,
 )
 from t212_demo import DEMO_BASE_URL, Trading212Error, make_client
 
@@ -419,7 +416,9 @@ def experiment_settings_from_config(config: Config) -> ExperimentSettings:
         minimum_hit_rate=config.experimental_minimum_hit_rate,
         minimum_mean_net_return=config.experimental_minimum_mean_net_return,
         assumed_round_trip_cost=config.experimental_assumed_round_trip_cost,
-        prediction_interval_seconds=config.rebalance_seconds,
+        prediction_interval_seconds=(
+            config.experimental_prediction_interval_seconds
+        ),
         top_n=config.top_n,
     )
 
@@ -463,7 +462,13 @@ class Runner:
         self.state["activeUniverse"] = sorted(self.active_universe)
         self.state["scoutUniverse"] = sorted(self.scout_quantities)
         self.experiment_settings = experiment_settings_from_config(config)
-        self.experimental_model = ExperimentalEnsemble(self.experiment_settings)
+        self.experimental_tournament = ExperimentalTournament(
+            self.experiment_settings,
+            config.experimental_candidate_ids,
+            config.experimental_compute_budget_seconds,
+            config.experimental_early_rejection_batches,
+            config.experimental_early_rejection_outcomes,
+        )
         self.running = True
         self.last_snapshot_log = 0.0
         self.last_market_closed_log = 0.0
@@ -639,65 +644,25 @@ class Runner:
         current_prices = {
             position.ticker: position.unit_account_value for position in positions
         }
-        resolve_shadow_predictions(
-            experiment_state,
-            current_prices,
-            now,
-            self.experiment_settings,
+        local = datetime.fromtimestamp(now, timezone.utc).astimezone(
+            ZoneInfo("America/New_York")
         )
-        last_attempt = max(
-            float(experiment_state.get("lastPredictionBatch", 0)),
-            float(experiment_state.get("lastTrainingAttempt", 0)),
+        local_minutes = local.hour * 60 + local.minute
+        result = self.experimental_tournament.update(
+            state=experiment_state,
+            histories=histories,
+            current_prices=current_prices,
+            active_universe=set(self.active_universe),
+            now=now,
+            allow_batch=(
+                10 * 60 <= local_minutes <= 15 * 60 + 25
+            ),
         )
-        due = (
-            now - last_attempt
-            >= self.experiment_settings.prediction_interval_seconds
-        )
-        if due:
-            experiment_state["lastTrainingAttempt"] = now
-            training_samples = self.experimental_model.fit(histories)
-            predictions = self.experimental_model.predict(
-                {
-                    ticker: histories[ticker]
-                    for ticker in self.active_universe
-                    if ticker in histories
-                }
-            )
-            experiment_state["trainingSamples"] = training_samples
-            experiment_state["lastPredictions"] = predictions
-            local = datetime.fromtimestamp(now, timezone.utc).astimezone(
-                ZoneInfo("America/New_York")
-            )
-            local_minutes = local.hour * 60 + local.minute
-            if 10 * 60 <= local_minutes <= 15 * 60 + 25:
-                create_prediction_batch(
-                    experiment_state,
-                    predictions,
-                    current_prices,
-                    now,
-                    self.experiment_settings,
-                )
-        predictions = {
-            str(ticker): float(value)
-            for ticker, value in experiment_state.get("lastPredictions", {}).items()
-        }
-        gates = gate_statistics(experiment_state, self.experiment_settings)
-        training_samples = int(experiment_state.get("trainingSamples", 0))
-        if training_samples < self.experiment_settings.minimum_training_samples:
-            status = "WARMUP"
-        elif gates["approved"]:
-            status = "APPROVED"
-        else:
-            status = "SHADOW"
-        diagnostics = {
-            "status": status,
-            "trainingSamples": training_samples,
-            "predictionCount": len(predictions),
-            "pendingCount": len(experiment_state.get("pending", [])),
-            **gates,
-        }
-        experiment_state["lastDiagnostics"] = diagnostics
-        return predictions, diagnostics
+        for event in result.events:
+            fields = dict(event)
+            event_name = str(fields.pop("event"))
+            append_journal(event_name, **fields)
+        return result.predictions, result.diagnostics
 
     def _risk_exit(
         self,
@@ -736,7 +701,10 @@ class Runner:
             self._experimental_signals(active_positions, now)
         )
         allocation_metrics = metrics
-        if experimental_diagnostics.get("approved"):
+        if (
+            experimental_diagnostics.get("approved")
+            and experimental_diagnostics.get("champion")
+        ):
             weight = self.config.experimental_signal_weight
             allocation_metrics = {
                 ticker: SignalMetrics(
@@ -1001,6 +969,27 @@ def process_is_running(pid: int) -> bool:
         return False
 
 
+def format_experimental_status_lines(
+    diagnostics: dict[str, Any],
+) -> list[str]:
+    champion = diagnostics.get("champion") or "暂无"
+    lines = [
+        f"实验锦标赛：{diagnostics.get('status', 'UNKNOWN')}，"
+        f"冠军 {champion}"
+    ]
+    for candidate_id, row in (
+        diagnostics.get("candidates") or {}
+    ).items():
+        lines.append(
+            f"  {candidate_id}: {row.get('status', 'UNKNOWN')}，"
+            f"批次 {int(row.get('batchCount') or 0)}，"
+            f"结果 {int(row.get('outcomeCount') or 0)}，"
+            f"命中 {float(row.get('hitRate') or 0):.1%}，"
+            f"净收益 {float(row.get('meanNetReturn') or 0):.3%}"
+        )
+    return lines
+
+
 def show_status() -> int:
     pid = int(PID_FILE.read_text().strip()) if PID_FILE.exists() else 0
     print(f"运行状态：{'运行中' if pid and process_is_running(pid) else '已停止'}")
@@ -1026,12 +1015,10 @@ def show_status() -> int:
             )
             experimental = diagnostics.get("experimental") or {}
             if experimental:
-                print(
-                    f"实验模型：{experimental.get('status')}，"
-                    f"训练样本 {experimental.get('trainingSamples', 0)}，"
-                    f"影子批次 {experimental.get('batchCount', 0)}，"
-                    f"命中率 {float(experimental.get('hitRate') or 0):.1%}"
-                )
+                for line in format_experimental_status_lines(
+                    experimental
+                ):
+                    print(line)
         promoted = state.get("promotedScouts", [])
         print(f"侦察晋升：{', '.join(promoted) if promoted else '暂无'}")
         print("持仓：")

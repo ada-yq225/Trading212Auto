@@ -4,11 +4,14 @@ import tempfile
 import unittest
 from datetime import datetime, timezone
 from pathlib import Path
+from unittest.mock import patch
 
 import auto_trader
 from auto_trader import (
     Config,
+    Position,
     ROOT,
+    Runner,
     STRATEGY_VERSION,
     SignalMetrics,
     backoff_seconds,
@@ -23,6 +26,7 @@ from auto_trader import (
     sample_volatility,
     target_weights,
 )
+from experimental_tournament import TournamentResult, migrate_tournament_state
 
 
 def metrics(score: float, long_return: float, volatility: float) -> SignalMetrics:
@@ -144,7 +148,10 @@ class StrategyTests(unittest.TestCase):
 
         self.assertEqual(settings.sample_interval_seconds, 15)
         self.assertEqual(settings.horizon_samples, 15)
-        self.assertEqual(settings.prediction_interval_seconds, 300)
+        self.assertEqual(
+            settings.prediction_interval_seconds,
+            config.experimental_prediction_interval_seconds,
+        )
         self.assertEqual(
             settings.minimum_shadow_batches,
             config.experimental_minimum_shadow_batches,
@@ -153,6 +160,135 @@ class StrategyTests(unittest.TestCase):
             settings.minimum_shadow_outcomes,
             config.experimental_minimum_shadow_outcomes,
         )
+
+    def test_tournament_migration_does_not_clear_price_history(self):
+        state = {
+            "strategyVersion": STRATEGY_VERSION,
+            "priceHistory": {"AMD_US_EQ": [1.0, 2.0]},
+            "experimental": {"trainingSamples": 150},
+        }
+
+        migrate_tournament_state(
+            state["experimental"],
+            Config().experimental_candidate_ids,
+        )
+
+        self.assertEqual(
+            state["priceHistory"]["AMD_US_EQ"],
+            [1.0, 2.0],
+        )
+        self.assertEqual(
+            state["experimental"]["candidates"]["legacy_ensemble"][
+                "trainingSamples"
+            ],
+            150,
+        )
+
+    def test_runner_passes_only_in_memory_data_to_tournament(self):
+        class FakeTournament:
+            def __init__(self):
+                self.call = None
+
+            def update(self, **kwargs):
+                self.call = kwargs
+                return TournamentResult(
+                    predictions={"AMD_US_EQ": 0.4},
+                    diagnostics={
+                        "approved": False,
+                        "champion": None,
+                        "candidates": {},
+                    },
+                    events=(
+                        {
+                            "event": "CANDIDATE_TEST",
+                            "candidate": "legacy_ensemble",
+                        },
+                    ),
+                )
+
+        runner = object.__new__(Runner)
+        runner.config = Config()
+        runner.state = {
+            "experimental": {},
+            "priceHistory": {
+                "AMD_US_EQ": [100.0] * 121,
+                "IGNORED_US_EQ": [50.0] * 121,
+            },
+        }
+        runner.price_universe = {"AMD_US_EQ"}
+        runner.active_universe = {"AMD_US_EQ"}
+        runner.experimental_tournament = FakeTournament()
+        position = Position(
+            ticker="AMD_US_EQ",
+            quantity=1.0,
+            available=1.0,
+            current_price=100.0,
+            unit_account_value=100.0,
+            current_value=100.0,
+            total_cost=100.0,
+            unrealized_pnl=0.0,
+        )
+        now = datetime(
+            2026,
+            7,
+            29,
+            15,
+            0,
+            tzinfo=timezone.utc,
+        ).timestamp()
+
+        with patch.object(auto_trader, "append_journal") as journal:
+            predictions, diagnostics = runner._experimental_signals(
+                [position],
+                now,
+            )
+
+        self.assertEqual(predictions, {"AMD_US_EQ": 0.4})
+        self.assertFalse(diagnostics["approved"])
+        self.assertEqual(
+            set(runner.experimental_tournament.call["histories"]),
+            {"AMD_US_EQ"},
+        )
+        self.assertEqual(
+            runner.experimental_tournament.call["current_prices"],
+            {"AMD_US_EQ": 100.0},
+        )
+        self.assertEqual(
+            runner.experimental_tournament.call["active_universe"],
+            {"AMD_US_EQ"},
+        )
+        self.assertTrue(
+            runner.experimental_tournament.call["allow_batch"]
+        )
+        journal.assert_called_once_with(
+            "CANDIDATE_TEST",
+            candidate="legacy_ensemble",
+        )
+
+    def test_experimental_status_lines_include_candidate_metrics(self):
+        diagnostics = {
+            "champion": "robust_huber",
+            "approved": True,
+            "candidates": {
+                "robust_huber": {
+                    "status": "APPROVED",
+                    "batchCount": 20,
+                    "outcomeCount": 40,
+                    "hitRate": 0.6,
+                    "meanNetReturn": 0.002,
+                }
+            },
+        }
+
+        lines = auto_trader.format_experimental_status_lines(diagnostics)
+
+        self.assertIn("冠军 robust_huber", lines[0])
+        self.assertIn("robust_huber", lines[1])
+        self.assertIn("APPROVED", lines[1])
+        self.assertIn("批次 20", lines[1])
+        self.assertIn("结果 40", lines[1])
+        self.assertIn("命中 60.0%", lines[1])
+        self.assertIn("净收益 0.200%", lines[1])
 
     def test_momentum_metrics_warms_up(self):
         self.assertIsNone(momentum_metrics([100.0] * 20, self.config))
