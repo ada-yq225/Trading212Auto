@@ -379,6 +379,23 @@ def load_active_universe(path: Path = UNIVERSE_FILE) -> set[str]:
     return {str(ticker) for ticker in data.get("tickers", []) if ticker}
 
 
+def experiment_settings_from_config(config: Config) -> ExperimentSettings:
+    return ExperimentSettings(
+        horizon_samples=config.experimental_horizon_samples,
+        sample_interval_seconds=config.poll_seconds,
+        minimum_history=config.experimental_minimum_history,
+        training_stride=config.experimental_training_stride,
+        minimum_training_samples=config.experimental_minimum_training_samples,
+        minimum_shadow_outcomes=config.experimental_minimum_shadow_outcomes,
+        minimum_shadow_batches=config.experimental_minimum_shadow_batches,
+        minimum_hit_rate=config.experimental_minimum_hit_rate,
+        minimum_mean_net_return=config.experimental_minimum_mean_net_return,
+        assumed_round_trip_cost=config.experimental_assumed_round_trip_cost,
+        prediction_interval_seconds=config.rebalance_seconds,
+        top_n=config.top_n,
+    )
+
+
 class Runner:
     def __init__(self, config: Config, execute: bool):
         self.config = config
@@ -417,19 +434,7 @@ class Runner:
                     self.sector_by_ticker[ticker] = str(sector)
         self.state["activeUniverse"] = sorted(self.active_universe)
         self.state["scoutUniverse"] = sorted(self.scout_quantities)
-        self.experiment_settings = ExperimentSettings(
-            horizon_samples=config.experimental_horizon_samples,
-            minimum_history=config.experimental_minimum_history,
-            training_stride=config.experimental_training_stride,
-            minimum_training_samples=config.experimental_minimum_training_samples,
-            minimum_shadow_outcomes=config.experimental_minimum_shadow_outcomes,
-            minimum_shadow_batches=config.experimental_minimum_shadow_batches,
-            minimum_hit_rate=config.experimental_minimum_hit_rate,
-            minimum_mean_net_return=config.experimental_minimum_mean_net_return,
-            assumed_round_trip_cost=config.experimental_assumed_round_trip_cost,
-            prediction_interval_seconds=config.rebalance_seconds,
-            top_n=config.top_n,
-        )
+        self.experiment_settings = experiment_settings_from_config(config)
         self.experimental_model = ExperimentalEnsemble(self.experiment_settings)
         self.running = True
         self.last_snapshot_log = 0.0

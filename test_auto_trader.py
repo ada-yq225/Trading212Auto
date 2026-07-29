@@ -3,6 +3,7 @@ import math
 import unittest
 from datetime import datetime, timezone
 
+import auto_trader
 from auto_trader import (
     Config,
     ROOT,
@@ -96,6 +97,30 @@ class StrategyTests(unittest.TestCase):
         self.assertEqual(config.experimental_minimum_hit_rate, 0.53)
         self.assertEqual(universe["scout_seed_interval_seconds"], 300)
         self.assertEqual(universe["scout_interval_seconds"], 300)
+
+    def test_experimental_settings_use_runner_sampling_interval(self):
+        config = Config(
+            poll_seconds=15,
+            rebalance_seconds=300,
+            experimental_horizon_samples=15,
+        )
+
+        self.assertTrue(
+            hasattr(auto_trader, "experiment_settings_from_config")
+        )
+        settings = auto_trader.experiment_settings_from_config(config)
+
+        self.assertEqual(settings.sample_interval_seconds, 15)
+        self.assertEqual(settings.horizon_samples, 15)
+        self.assertEqual(settings.prediction_interval_seconds, 300)
+        self.assertEqual(
+            settings.minimum_shadow_batches,
+            config.experimental_minimum_shadow_batches,
+        )
+        self.assertEqual(
+            settings.minimum_shadow_outcomes,
+            config.experimental_minimum_shadow_outcomes,
+        )
 
     def test_momentum_metrics_warms_up(self):
         self.assertIsNone(momentum_metrics([100.0] * 20, self.config))
