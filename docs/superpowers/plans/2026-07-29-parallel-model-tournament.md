@@ -387,9 +387,12 @@ class CandidateModel(Protocol):
 Implement:
 
 - `LegacyCandidate` as an adapter around `ExperimentalEnsemble`.
-- `RobustHuberCandidate` with
-  `make_pipeline(RobustScaler(), HuberRegressor(epsilon=1.35, alpha=1.0,
-  max_iter=200))`, using the first 12 columns.
+- `RobustHuberCandidate` with `make_pipeline(RobustScaler(),
+  SGDRegressor(loss="huber", epsilon=0.1, alpha=0.001, max_iter=2000,
+  tol=1e-5, shuffle=False, random_state=settings.random_state))`, using the
+  first 12 columns. The stochastic-gradient implementation avoids the
+  numerical overflow observed in SciPy's L-BFGS Huber solver on this
+  risk-adjusted label distribution.
 - `RegimeHistGBCandidate` with deterministic
   `HistGradientBoostingRegressor(learning_rate=0.04, max_iter=120,
   max_depth=3, min_samples_leaf=30, l2_regularization=2.0,
