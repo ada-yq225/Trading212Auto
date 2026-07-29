@@ -4,10 +4,19 @@ from __future__ import annotations
 
 import copy
 import math
+import time
+from dataclasses import dataclass
 from statistics import mean, stdev
-from typing import Any
+from typing import Any, Callable
 
-from experimental_model import ExperimentSettings
+from experimental_candidates import CandidateModel, create_candidate
+from experimental_model import (
+    ExperimentSettings,
+    build_shared_dataset,
+    create_prediction_batch,
+    current_feature_matrix,
+    resolve_shadow_predictions,
+)
 
 
 TOURNAMENT_SCHEMA_VERSION = 1
@@ -198,3 +207,243 @@ def select_champion(
         )
     )
     return eligible[0][0]
+
+
+@dataclass(frozen=True)
+class TournamentResult:
+    predictions: dict[str, float]
+    diagnostics: dict[str, Any]
+    events: tuple[dict[str, Any], ...]
+
+
+class ExperimentalTournament:
+    def __init__(
+        self,
+        experiment_settings: ExperimentSettings,
+        candidate_ids: tuple[str, ...],
+        compute_budget_seconds: float,
+        early_rejection_batches: int,
+        early_rejection_outcomes: int,
+        *,
+        models: dict[str, CandidateModel] | None = None,
+        monotonic: Callable[[], float] = time.monotonic,
+    ):
+        self.settings = experiment_settings
+        self.candidate_ids = tuple(candidate_ids)
+        self.compute_budget_seconds = compute_budget_seconds
+        self.early_rejection_batches = early_rejection_batches
+        self.early_rejection_outcomes = early_rejection_outcomes
+        self.models = models or {
+            candidate_id: create_candidate(
+                candidate_id,
+                experiment_settings,
+            )
+            for candidate_id in self.candidate_ids
+        }
+        self.monotonic = monotonic
+
+    def update(
+        self,
+        state: dict[str, Any],
+        histories: dict[str, list[float]],
+        current_prices: dict[str, float],
+        active_universe: set[str],
+        now: float,
+        allow_batch: bool,
+    ) -> TournamentResult:
+        migrate_tournament_state(state, self.candidate_ids)
+        candidates = state["candidates"]
+        events: list[dict[str, Any]] = []
+        statuses: dict[str, str] = {}
+
+        for candidate_id in self.candidate_ids:
+            candidate_state = candidates[candidate_id]
+            resolve_shadow_predictions(
+                candidate_state,
+                current_prices,
+                now,
+                self.settings,
+            )
+            if (
+                not candidate_state.get("frozen")
+                and should_freeze_candidate(
+                    candidate_id,
+                    candidate_state,
+                    self.settings,
+                    self.early_rejection_batches,
+                    self.early_rejection_outcomes,
+                )
+            ):
+                candidate_state["frozen"] = True
+                statuses[candidate_id] = "FROZEN"
+                events.append(
+                    {
+                        "event": "CANDIDATE_FROZEN",
+                        "candidate": candidate_id,
+                    }
+                )
+
+        last_batch = float(state.get("lastTournamentBatch", 0.0) or 0.0)
+        batch_due = (
+            allow_batch
+            and now - last_batch
+            >= self.settings.prediction_interval_seconds
+        )
+        if batch_due:
+            dataset = build_shared_dataset(histories, self.settings)
+            prediction_histories = {
+                ticker: histories[ticker]
+                for ticker in sorted(active_universe)
+                if ticker in histories
+            }
+            tickers, matrix = current_feature_matrix(
+                prediction_histories,
+            )
+            started = self.monotonic()
+            for index, candidate_id in enumerate(self.candidate_ids):
+                candidate_state = candidates[candidate_id]
+                if candidate_state.get("frozen"):
+                    statuses[candidate_id] = "FROZEN"
+                    continue
+                if self.monotonic() - started >= self.compute_budget_seconds:
+                    for skipped_id in self.candidate_ids[index:]:
+                        if candidates[skipped_id].get("frozen"):
+                            statuses[skipped_id] = "FROZEN"
+                            continue
+                        statuses[skipped_id] = "SKIPPED_BUDGET"
+                        events.append(
+                            {
+                                "event": "CANDIDATE_BUDGET_SKIP",
+                                "candidate": skipped_id,
+                            }
+                        )
+                    break
+                candidate_state["lastTrainingAttempt"] = now
+                try:
+                    training_samples = self.models[candidate_id].fit(
+                        dataset
+                    )
+                    predictions = self.models[candidate_id].predict(
+                        tickers,
+                        matrix,
+                    )
+                    predictions = {
+                        str(ticker): float(value)
+                        for ticker, value in predictions.items()
+                        if ticker in active_universe
+                        and math.isfinite(float(value))
+                    }
+                    candidate_state["trainingSamples"] = int(
+                        training_samples
+                    )
+                    candidate_state["lastPredictions"] = predictions
+                    candidate_state["errorCount"] = 0
+                    create_prediction_batch(
+                        candidate_state,
+                        predictions,
+                        current_prices,
+                        now,
+                        self.settings,
+                    )
+                except Exception as exc:
+                    error_count = int(
+                        candidate_state.get("errorCount", 0) or 0
+                    ) + 1
+                    candidate_state["errorCount"] = error_count
+                    statuses[candidate_id] = "ERROR"
+                    events.append(
+                        {
+                            "event": "CANDIDATE_ERROR",
+                            "candidate": candidate_id,
+                            "error": repr(exc),
+                        }
+                    )
+                    if (
+                        candidate_id != "legacy_ensemble"
+                        and error_count >= 3
+                    ):
+                        candidate_state["frozen"] = True
+                    continue
+            state["lastTournamentBatch"] = now
+
+        previous_champion = state.get("champion")
+        champion = select_champion(
+            candidates,
+            self.settings,
+            current=previous_champion,
+        )
+        state["champion"] = champion
+        if champion != previous_champion:
+            events.append(
+                {
+                    "event": "TOURNAMENT_CHAMPION_CHANGED",
+                    "previous": previous_champion,
+                    "champion": champion,
+                }
+            )
+
+        candidate_rows: dict[str, dict[str, Any]] = {}
+        for candidate_id in self.candidate_ids:
+            candidate_state = candidates[candidate_id]
+            diagnostics = candidate_diagnostics(
+                candidate_state,
+                self.settings,
+            )
+            if candidate_id not in statuses:
+                if diagnostics["frozen"]:
+                    status = "FROZEN"
+                elif (
+                    diagnostics["trainingSamples"]
+                    < self.settings.minimum_training_samples
+                ):
+                    status = "WARMUP"
+                elif diagnostics["approved"]:
+                    status = "APPROVED"
+                else:
+                    status = "SHADOW"
+            else:
+                status = statuses[candidate_id]
+            row = {
+                "status": status,
+                "predictionCount": len(
+                    candidate_state.get("lastPredictions", {})
+                ),
+                "pendingCount": len(
+                    candidate_state.get("pending", [])
+                ),
+                "errorCount": int(
+                    candidate_state.get("errorCount", 0) or 0
+                ),
+                **diagnostics,
+            }
+            candidate_state["lastDiagnostics"] = row
+            candidate_rows[candidate_id] = row
+
+        approved = bool(
+            champion
+            and candidate_rows.get(champion, {}).get("approved")
+        )
+        predictions = (
+            {
+                str(ticker): float(value)
+                for ticker, value in candidates[champion]
+                .get("lastPredictions", {})
+                .items()
+            }
+            if approved and champion
+            else {}
+        )
+        diagnostics = {
+            "status": "APPROVED" if approved else "SHADOW",
+            "approved": approved,
+            "champion": champion,
+            "lastTournamentBatch": float(
+                state.get("lastTournamentBatch", 0.0) or 0.0
+            ),
+            "candidates": candidate_rows,
+        }
+        return TournamentResult(
+            predictions=predictions,
+            diagnostics=diagnostics,
+            events=tuple(events),
+        )

@@ -1,10 +1,13 @@
 import copy
 import importlib
 import importlib.util
+import math
+import time
 import unittest
 
 from experimental_candidates import CANDIDATE_IDS
 from experimental_model import ExperimentSettings
+from experimental_tournament import ExperimentalTournament
 
 
 def candidate_state(*, batches, hits, returns):
@@ -42,9 +45,81 @@ def failed_state(*, mean_return):
     )
 
 
+def synthetic_histories(length=300):
+    return {
+        f"STOCK_{stock}": [
+            100
+            * math.exp(
+                (0.0001 + stock * 0.00003) * index
+                + 0.004 * math.sin(index / (7 + stock))
+            )
+            for index in range(length)
+        ]
+        for stock in range(8)
+    }
+
+
+class FakeCandidate:
+    def __init__(self, *, fail=False):
+        self.fail = fail
+
+    def fit(self, dataset):
+        if self.fail:
+            raise RuntimeError("candidate failed")
+        return len(dataset.labels)
+
+    def predict(self, tickers, matrix):
+        return {
+            ticker: float(index - len(tickers) / 2)
+            for index, ticker in enumerate(tickers)
+        }
+
+
+class StepClock:
+    def __init__(self, values):
+        self.values = list(values)
+        self.last = self.values[-1]
+
+    def __call__(self):
+        if self.values:
+            self.last = self.values.pop(0)
+        return self.last
+
+
+def fake_models(failing=frozenset()):
+    return {
+        candidate_id: FakeCandidate(
+            fail=candidate_id in failing
+        )
+        for candidate_id in CANDIDATE_IDS
+    }
+
+
+def make_tournament(settings, *, models=None, clock=time.monotonic):
+    return ExperimentalTournament(
+        settings,
+        CANDIDATE_IDS,
+        compute_budget_seconds=8.0,
+        early_rejection_batches=10,
+        early_rejection_outcomes=20,
+        models=models or fake_models(),
+        monotonic=clock,
+    )
+
+
 class TournamentTests(unittest.TestCase):
     def setUp(self):
-        self.settings = ExperimentSettings()
+        self.settings = ExperimentSettings(
+            sample_interval_seconds=15.0,
+            prediction_interval_seconds=225.0,
+        )
+        self.state = {}
+        self.histories = synthetic_histories()
+        self.current_prices = {
+            ticker: values[-1]
+            for ticker, values in self.histories.items()
+        }
+        self.active_universe = set(self.histories)
 
     def test_migration_preserves_legacy_progress_and_is_idempotent(self):
         self.assertIsNotNone(
@@ -198,6 +273,104 @@ class TournamentTests(unittest.TestCase):
                 current="robust_huber",
             )
         )
+
+    def test_candidate_failure_is_isolated(self):
+        models = fake_models(failing={"regime_histgb"})
+
+        result = make_tournament(
+            self.settings,
+            models=models,
+        ).update(
+            self.state,
+            self.histories,
+            self.current_prices,
+            self.active_universe,
+            now=1000.0,
+            allow_batch=True,
+        )
+
+        self.assertIn(
+            "legacy_ensemble",
+            result.diagnostics["candidates"],
+        )
+        self.assertEqual(
+            result.diagnostics["candidates"]["regime_histgb"]["status"],
+            "ERROR",
+        )
+        self.assertTrue(
+            any(
+                event["event"] == "CANDIDATE_ERROR"
+                for event in result.events
+            )
+        )
+        self.assertTrue(
+            self.state["candidates"]["legacy_ensemble"]["pending"]
+        )
+
+    def test_three_candidate_failures_freeze_only_that_candidate(self):
+        models = fake_models(failing={"regime_histgb"})
+        engine = make_tournament(self.settings, models=models)
+
+        for now in (1000.0, 1225.0, 1450.0):
+            engine.update(
+                self.state,
+                self.histories,
+                self.current_prices,
+                self.active_universe,
+                now=now,
+                allow_batch=True,
+            )
+
+        self.assertTrue(
+            self.state["candidates"]["regime_histgb"]["frozen"]
+        )
+        self.assertFalse(
+            self.state["candidates"]["robust_huber"]["frozen"]
+        )
+
+    def test_compute_budget_skip_creates_no_fake_batch(self):
+        clock = StepClock([0.0, 1.0, 9.0, 9.1])
+
+        result = make_tournament(
+            self.settings,
+            clock=clock,
+        ).update(
+            self.state,
+            self.histories,
+            self.current_prices,
+            self.active_universe,
+            now=1000.0,
+            allow_batch=True,
+        )
+
+        skipped = result.diagnostics["candidates"]["robust_huber"]
+        self.assertEqual(skipped["status"], "SKIPPED_BUDGET")
+        self.assertEqual(
+            self.state["candidates"]["robust_huber"]["pending"],
+            [],
+        )
+        self.assertEqual(
+            self.state["candidates"]["robust_huber"]["errorCount"],
+            0,
+        )
+
+    def test_tournament_uses_one_shared_batch_timestamp(self):
+        make_tournament(self.settings).update(
+            self.state,
+            self.histories,
+            self.current_prices,
+            self.active_universe,
+            now=1000.0,
+            allow_batch=True,
+        )
+
+        created = {
+            item["createdAt"]
+            for state in self.state["candidates"].values()
+            for item in state["pending"]
+        }
+
+        self.assertEqual(created, {1000.0})
 
 
 if __name__ == "__main__":
