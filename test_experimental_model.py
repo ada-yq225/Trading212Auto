@@ -1,6 +1,9 @@
 import math
 import unittest
 
+import numpy as np
+
+import experimental_model
 from experimental_model import (
     ExperimentSettings,
     ExperimentalEnsemble,
@@ -162,6 +165,46 @@ class ExperimentalModelTests(unittest.TestCase):
             settings=settings,
         )
         self.assertEqual(len(state["outcomes"]), 1)
+
+    def test_shared_dataset_contains_causal_market_context(self):
+        self.assertTrue(
+            hasattr(experimental_model, "build_shared_dataset")
+        )
+        build_shared_dataset = experimental_model.build_shared_dataset
+        histories = synthetic_histories()
+        baseline = build_shared_dataset(histories, self.settings)
+        changed = {
+            ticker: list(values) for ticker, values in histories.items()
+        }
+        for values in changed.values():
+            values[-10:] = [value * 100 for value in values[-10:]]
+        earlier = {
+            ticker: values[:-15] for ticker, values in changed.items()
+        }
+        comparison = build_shared_dataset(earlier, self.settings)
+        original = build_shared_dataset(
+            {
+                ticker: values[:-15]
+                for ticker, values in histories.items()
+            },
+            self.settings,
+        )
+        np.testing.assert_allclose(
+            comparison.features,
+            original.features,
+        )
+        self.assertEqual(baseline.features.shape[1], 16)
+
+    def test_current_feature_matrix_is_cross_sectionally_aligned(self):
+        self.assertTrue(
+            hasattr(experimental_model, "current_feature_matrix")
+        )
+        tickers, matrix = experimental_model.current_feature_matrix(
+            synthetic_histories()
+        )
+        self.assertEqual(len(tickers), 8)
+        self.assertEqual(matrix.shape, (8, 16))
+        self.assertTrue(np.isfinite(matrix).all())
 
 
 if __name__ == "__main__":

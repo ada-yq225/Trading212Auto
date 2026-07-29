@@ -29,6 +29,13 @@ FEATURE_NAMES = (
     "short_long_interaction",
 )
 
+CONTEXT_FEATURE_NAMES = (
+    "market_return_15",
+    "market_return_60",
+    "market_return_120",
+    "cross_sectional_dispersion_15",
+)
+
 
 @dataclass(frozen=True)
 class ExperimentSettings:
@@ -45,6 +52,14 @@ class ExperimentSettings:
     prediction_interval_seconds: float = 900.0
     top_n: int = 6
     random_state: int = 212
+
+
+@dataclass(frozen=True)
+class SharedDataset:
+    features: np.ndarray
+    labels: np.ndarray
+    tickers: tuple[str, ...]
+    indices: tuple[int, ...]
 
 
 def _log_return(values: list[float], start: int, end: int) -> float:
@@ -102,6 +117,32 @@ def causal_features(values: list[float], index: int) -> list[float] | None:
     ]
 
 
+def _context_features(
+    histories: dict[str, list[float]],
+    age_from_latest: int,
+) -> list[float] | None:
+    rows: list[tuple[float, float, float]] = []
+    for values in histories.values():
+        index = len(values) - 1 - age_from_latest
+        if index < 120:
+            continue
+        rows.append(
+            tuple(
+                _log_return(values, index - window, index)
+                for window in (15, 60, 120)
+            )
+        )
+    if len(rows) < 3:
+        return None
+    matrix = np.asarray(rows, dtype=float)
+    return [
+        float(np.median(matrix[:, 0])),
+        float(np.median(matrix[:, 1])),
+        float(np.median(matrix[:, 2])),
+        float(np.std(matrix[:, 0], ddof=1)),
+    ]
+
+
 def supervised_samples(
     histories: dict[str, list[float]],
     settings: ExperimentSettings,
@@ -133,6 +174,95 @@ def supervised_samples(
     return np.asarray(features, dtype=float), np.asarray(labels, dtype=float)
 
 
+def build_shared_dataset(
+    histories: dict[str, list[float]],
+    settings: ExperimentSettings,
+) -> SharedDataset:
+    features: list[list[float]] = []
+    labels: list[float] = []
+    tickers: list[str] = []
+    indices: list[int] = []
+    for ticker in sorted(histories):
+        values = histories[ticker]
+        final_feature_index = len(values) - 1 - settings.horizon_samples
+        for index in range(
+            settings.minimum_history,
+            final_feature_index + 1,
+            settings.training_stride,
+        ):
+            row = causal_features(values, index)
+            context = _context_features(
+                histories,
+                len(values) - 1 - index,
+            )
+            if row is None or context is None or values[index] <= 0:
+                continue
+            future_return = math.log(
+                values[index + settings.horizon_samples] / values[index]
+            )
+            past_returns = _returns(values, index - 60, index)
+            past_volatility = max(
+                float(np.std(past_returns, ddof=1)),
+                1e-6,
+            )
+            risk_adjusted_label = future_return / (
+                past_volatility * math.sqrt(settings.horizon_samples)
+            )
+            features.append(row + context)
+            labels.append(max(-5.0, min(5.0, risk_adjusted_label)))
+            tickers.append(ticker)
+            indices.append(index)
+    width = len(FEATURE_NAMES) + len(CONTEXT_FEATURE_NAMES)
+    matrix = (
+        np.asarray(features, dtype=float)
+        if features
+        else np.empty((0, width))
+    )
+    return SharedDataset(
+        features=matrix,
+        labels=np.asarray(labels, dtype=float),
+        tickers=tuple(tickers),
+        indices=tuple(indices),
+    )
+
+
+def current_feature_matrix(
+    histories: dict[str, list[float]],
+) -> tuple[tuple[str, ...], np.ndarray]:
+    context = _context_features(histories, 0)
+    if context is None:
+        return (), np.empty((0, len(FEATURE_NAMES) + len(CONTEXT_FEATURE_NAMES)))
+    tickers: list[str] = []
+    rows: list[list[float]] = []
+    for ticker in sorted(histories):
+        values = histories[ticker]
+        row = causal_features(values, len(values) - 1)
+        if row is None:
+            continue
+        combined = row + context
+        if not np.isfinite(np.asarray(combined, dtype=float)).all():
+            continue
+        tickers.append(ticker)
+        rows.append(combined)
+    width = len(FEATURE_NAMES) + len(CONTEXT_FEATURE_NAMES)
+    matrix = np.asarray(rows, dtype=float) if rows else np.empty((0, width))
+    return tuple(tickers), matrix
+
+
+def normalized_predictions(
+    tickers: tuple[str, ...],
+    predictions: np.ndarray,
+) -> dict[str, float]:
+    if not tickers or len(tickers) != len(predictions):
+        return {}
+    center = float(np.mean(predictions))
+    scale = max(float(np.std(predictions)), 1e-6)
+    return {
+        ticker: max(-3.0, min(3.0, float((prediction - center) / scale)))
+        for ticker, prediction in zip(tickers, predictions)
+    }
+
+
 class ExperimentalEnsemble:
     def __init__(self, settings: ExperimentSettings):
         self.settings = settings
@@ -154,6 +284,13 @@ class ExperimentalEnsemble:
 
     def fit(self, histories: dict[str, list[float]]) -> int:
         features, labels = supervised_samples(histories, self.settings)
+        return self._fit_arrays(features, labels)
+
+    def _fit_arrays(
+        self,
+        features: np.ndarray,
+        labels: np.ndarray,
+    ) -> int:
         self.training_samples = len(labels)
         if (
             self.training_samples < self.settings.minimum_training_samples
@@ -165,6 +302,9 @@ class ExperimentalEnsemble:
         self.tree.fit(features, labels)
         self.is_fitted = True
         return self.training_samples
+
+    def fit_dataset(self, dataset: SharedDataset) -> int:
+        return self._fit_arrays(dataset.features[:, :12], dataset.labels)
 
     def predict(self, histories: dict[str, list[float]]) -> dict[str, float]:
         if not self.is_fitted:
@@ -179,13 +319,20 @@ class ExperimentalEnsemble:
         if not rows:
             return {}
         matrix = np.asarray(rows, dtype=float)
-        predictions = 0.5 * self.linear.predict(matrix) + 0.5 * self.tree.predict(matrix)
-        center = float(np.mean(predictions))
-        scale = max(float(np.std(predictions)), 1e-6)
-        return {
-            ticker: max(-3.0, min(3.0, float((prediction - center) / scale)))
-            for ticker, prediction in zip(tickers, predictions)
-        }
+        return self.predict_matrix(tuple(tickers), matrix)
+
+    def predict_matrix(
+        self,
+        tickers: tuple[str, ...],
+        matrix: np.ndarray,
+    ) -> dict[str, float]:
+        if not self.is_fitted or not len(matrix):
+            return {}
+        predictions = (
+            0.5 * self.linear.predict(matrix[:, :12])
+            + 0.5 * self.tree.predict(matrix[:, :12])
+        )
+        return normalized_predictions(tickers, predictions)
 
 
 def resolve_shadow_predictions(
