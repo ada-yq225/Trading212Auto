@@ -1,3 +1,4 @@
+import copy
 import json
 import math
 import tempfile
@@ -24,6 +25,7 @@ from auto_trader import (
     migrate_strategy_state,
     momentum_metrics,
     sample_volatility,
+    reset_stale_sampling_state,
     target_weights,
 )
 from experimental_tournament import TournamentResult, migrate_tournament_state
@@ -38,6 +40,37 @@ def metrics(score: float, long_return: float, volatility: float) -> SignalMetric
         volatility=volatility,
         consistency=0.5 if score > 0 else -0.5,
     )
+
+
+def stale_tournament_state():
+    return {
+        "strategyVersion": STRATEGY_VERSION,
+        "lastCycleAt": "2026-07-30T19:50:48+00:00",
+        "priceHistory": {"AMD_US_EQ": [1.0, 2.0]},
+        "pricePeaks": {"AMD_US_EQ": 2.0},
+        "ordersToday": 56,
+        "promotedScouts": ["LLY_US_EQ"],
+        "experimental": {
+            "schemaVersion": 1,
+            "champion": "legacy_ensemble",
+            "lastTournamentBatch": 100.0,
+            "candidates": {
+                "legacy_ensemble": {
+                    "trainingSamples": 1650,
+                    "lastPredictions": {"AMD_US_EQ": 1.0},
+                    "pending": [{"createdAt": 100.0}],
+                    "outcomes": [
+                        {"createdAt": 50.0, "selected": True}
+                    ],
+                    "lastPredictionBatch": 100.0,
+                    "lastTrainingAttempt": 100.0,
+                    "lastDiagnostics": {"approved": True},
+                    "frozen": False,
+                    "errorCount": 0,
+                }
+            },
+        },
+    }
 
 
 class StrategyTests(unittest.TestCase):
@@ -183,6 +216,106 @@ class StrategyTests(unittest.TestCase):
             ],
             150,
         )
+
+    def test_stale_sampling_reset_preserves_forward_evidence_and_risk_state(
+        self,
+    ):
+        state = stale_tournament_state()
+        now = datetime(
+            2026,
+            8,
+            5,
+            15,
+            0,
+            tzinfo=timezone.utc,
+        ).timestamp()
+
+        metadata = reset_stale_sampling_state(state, now, 300.0)
+
+        self.assertIsNotNone(metadata)
+        self.assertGreater(metadata["gapSeconds"], 300.0)
+        self.assertEqual(metadata["thresholdSeconds"], 300.0)
+        self.assertEqual(state["priceHistory"], {})
+        self.assertEqual(state["pricePeaks"], {"AMD_US_EQ": 2.0})
+        self.assertEqual(state["ordersToday"], 56)
+        self.assertEqual(state["promotedScouts"], ["LLY_US_EQ"])
+        experiment = state["experimental"]
+        self.assertIsNone(experiment["champion"])
+        self.assertEqual(experiment["lastTournamentBatch"], now)
+        legacy = experiment["candidates"]["legacy_ensemble"]
+        self.assertEqual(legacy["trainingSamples"], 0)
+        self.assertEqual(legacy["lastPredictions"], {})
+        self.assertEqual(legacy["pending"], [])
+        self.assertEqual(len(legacy["outcomes"]), 1)
+        self.assertFalse(legacy["frozen"])
+        self.assertEqual(legacy["errorCount"], 0)
+
+    def test_recent_sampling_state_is_not_reset(self):
+        state = stale_tournament_state()
+        state["lastCycleAt"] = "2026-08-05T14:59:00+00:00"
+        snapshot = copy.deepcopy(state)
+        now = datetime(
+            2026,
+            8,
+            5,
+            15,
+            0,
+            tzinfo=timezone.utc,
+        ).timestamp()
+
+        self.assertIsNone(
+            reset_stale_sampling_state(state, now, 300.0)
+        )
+        self.assertEqual(state, snapshot)
+
+    def test_runner_persists_and_journals_sampling_gap_reset(self):
+        state = stale_tournament_state()
+        now = datetime(
+            2026,
+            8,
+            5,
+            15,
+            0,
+            tzinfo=timezone.utc,
+        ).timestamp()
+        with patch.object(
+            auto_trader,
+            "make_client",
+            return_value=object(),
+        ), patch.object(
+            auto_trader,
+            "load_state",
+            return_value=state,
+        ), patch.object(
+            auto_trader,
+            "load_universe_config",
+            return_value={},
+        ), patch.object(
+            auto_trader.time,
+            "time",
+            return_value=now,
+        ), patch.object(
+            auto_trader,
+            "atomic_json_write",
+        ) as write_state, patch.object(
+            auto_trader,
+            "append_journal",
+        ) as journal:
+            Runner(Config(), execute=True)
+
+        write_state.assert_called_once_with(
+            auto_trader.STATE_FILE,
+            state,
+        )
+        journal.assert_called_once()
+        (event,) = journal.call_args.args
+        self.assertEqual(event, "SAMPLING_GAP_RESET")
+        self.assertGreater(
+            journal.call_args.kwargs["gapSeconds"],
+            300.0,
+        )
+        self.assertEqual(state["priceHistory"], {})
+        self.assertIsNone(state["experimental"]["champion"])
 
     def test_runner_passes_only_in_memory_data_to_tournament(self):
         class FakeTournament:

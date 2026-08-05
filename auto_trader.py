@@ -21,6 +21,7 @@ from zoneinfo import ZoneInfo
 from experimental_model import ExperimentSettings
 from experimental_tournament import (
     ExperimentalTournament,
+    migrate_tournament_state,
 )
 from t212_demo import DEMO_BASE_URL, Trading212Error, make_client
 
@@ -423,6 +424,40 @@ def experiment_settings_from_config(config: Config) -> ExperimentSettings:
     )
 
 
+def reset_stale_sampling_state(
+    state: dict[str, Any],
+    now: float,
+    threshold_seconds: float,
+) -> dict[str, float] | None:
+    raw_last_cycle = state.get("lastCycleAt")
+    if not raw_last_cycle:
+        return None
+    try:
+        last_cycle = datetime.fromisoformat(
+            str(raw_last_cycle).replace("Z", "+00:00")
+        ).timestamp()
+    except (TypeError, ValueError):
+        return None
+    gap_seconds = max(0.0, now - last_cycle)
+    if gap_seconds <= threshold_seconds:
+        return None
+    state["priceHistory"] = {}
+    experiment = state.setdefault("experimental", {})
+    experiment["champion"] = None
+    experiment["lastTournamentBatch"] = now
+    for candidate in experiment.get("candidates", {}).values():
+        candidate["trainingSamples"] = 0
+        candidate["lastPredictions"] = {}
+        candidate["pending"] = []
+        candidate["lastPredictionBatch"] = 0.0
+        candidate["lastTrainingAttempt"] = 0.0
+        candidate["lastDiagnostics"] = {}
+    return {
+        "gapSeconds": gap_seconds,
+        "thresholdSeconds": float(threshold_seconds),
+    }
+
+
 class Runner:
     def __init__(self, config: Config, execute: bool):
         self.config = config
@@ -430,6 +465,25 @@ class Runner:
         self.client = make_client()
         self.state = load_state(config)
         migrate_strategy_state(self.state, STRATEGY_VERSION)
+        migrate_tournament_state(
+            self.state.setdefault("experimental", {}),
+            config.experimental_candidate_ids,
+        )
+        gap_threshold = max(
+            config.rebalance_seconds,
+            config.poll_seconds * config.experimental_horizon_samples,
+        )
+        reset_metadata = reset_stale_sampling_state(
+            self.state,
+            time.time(),
+            gap_threshold,
+        )
+        if reset_metadata:
+            atomic_json_write(STATE_FILE, self.state)
+            append_journal(
+                "SAMPLING_GAP_RESET",
+                **reset_metadata,
+            )
         self.universe_config = load_universe_config()
         self.base_universe = {
             str(ticker) for ticker in self.universe_config.get("tickers", []) if ticker
