@@ -7,7 +7,10 @@ import unittest
 
 from experimental_candidates import CANDIDATE_IDS
 from experimental_model import ExperimentSettings
-from experimental_tournament import ExperimentalTournament
+from experimental_tournament import (
+    ExperimentalTournament,
+    candidate_diagnostics,
+)
 
 
 def candidate_state(*, batches, hits, returns):
@@ -43,6 +46,33 @@ def failed_state(*, mean_return):
         hits=30,
         returns=[mean_return] * 40,
     )
+
+
+def state_with_long_batch_history():
+    older = [
+        {
+            "createdAt": float(batch),
+            "selected": True,
+            "hit": False,
+            "netReturn": -0.1,
+        }
+        for batch in range(20)
+    ]
+    recent = [
+        {
+            "createdAt": float(13 + index % 7),
+            "selected": True,
+            "hit": index < 24,
+            "netReturn": 0.002,
+        }
+        for index in range(40)
+    ]
+    return {
+        "trainingSamples": 200,
+        "pending": [],
+        "outcomes": older + recent,
+        "frozen": False,
+    }
 
 
 def synthetic_histories(length=300):
@@ -273,6 +303,20 @@ class TournamentTests(unittest.TestCase):
                 current="robust_huber",
             )
         )
+
+    def test_batch_gate_uses_retained_history_but_metrics_use_recent_window(
+        self,
+    ):
+        diagnostics = candidate_diagnostics(
+            state_with_long_batch_history(),
+            self.settings,
+        )
+
+        self.assertEqual(diagnostics["batchCount"], 20)
+        self.assertEqual(diagnostics["outcomeCount"], 40)
+        self.assertAlmostEqual(diagnostics["hitRate"], 0.6)
+        self.assertAlmostEqual(diagnostics["meanNetReturn"], 0.002)
+        self.assertTrue(diagnostics["approved"])
 
     def test_candidate_failure_is_isolated(self):
         models = fake_models(failing={"regime_histgb"})

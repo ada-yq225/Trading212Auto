@@ -113,14 +113,15 @@ def candidate_diagnostics(
     candidate_state: dict[str, Any],
     settings: ExperimentSettings,
 ) -> dict[str, Any]:
-    selected = [
+    all_selected = [
         item
         for item in candidate_state.get("outcomes", [])
         if item.get("selected")
-    ][-settings.minimum_shadow_outcomes :]
+    ]
+    selected = all_selected[-settings.minimum_shadow_outcomes :]
     outcome_count = len(selected)
     batch_count = len(
-        {float(item["createdAt"]) for item in selected}
+        {float(item["createdAt"]) for item in all_selected}
     )
     hits = sum(bool(item.get("hit")) for item in selected)
     hit_rate = hits / outcome_count if outcome_count else 0.0
