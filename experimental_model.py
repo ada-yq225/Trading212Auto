@@ -36,6 +36,9 @@ CONTEXT_FEATURE_NAMES = (
     "cross_sectional_dispersion_15",
 )
 
+MAX_PENDING_RECORDS = 500
+MAX_OUTCOME_RECORDS = 5000
+
 
 @dataclass(frozen=True)
 class ExperimentSettings:
@@ -374,8 +377,8 @@ def resolve_shadow_predictions(
                 ),
             }
         )
-    experiment_state["pending"] = unresolved[-500:]
-    experiment_state["outcomes"] = outcomes[-500:]
+    experiment_state["pending"] = unresolved[-MAX_PENDING_RECORDS:]
+    experiment_state["outcomes"] = outcomes[-MAX_OUTCOME_RECORDS:]
 
 
 def gate_statistics(
@@ -438,6 +441,6 @@ def create_prediction_batch(
                 "selected": ticker in selected,
             }
         )
-    experiment_state["pending"] = pending[-500:]
+    experiment_state["pending"] = pending[-MAX_PENDING_RECORDS:]
     experiment_state["lastPredictionBatch"] = now
     return True

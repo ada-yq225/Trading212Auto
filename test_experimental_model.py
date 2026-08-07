@@ -98,6 +98,46 @@ class ExperimentalModelTests(unittest.TestCase):
         self.assertEqual(len(selected), 1)
         self.assertGreater(selected[0]["netReturn"], 0)
 
+    def test_resolved_outcomes_retain_at_least_twenty_full_batches(self):
+        settings = ExperimentSettings(
+            horizon_samples=1,
+            sample_interval_seconds=1.0,
+        )
+        state = {
+            "outcomes": [
+                {
+                    "createdAt": float(index // 50),
+                    "resolvedAt": 1.0,
+                    "ticker": f"STOCK_{index % 50}",
+                    "prediction": 1.0,
+                    "realizedReturn": 0.001,
+                    "hit": True,
+                    "selected": index % 10 == 0,
+                    "netReturn": 0.0,
+                }
+                for index in range(1000)
+            ],
+            "pending": [
+                {
+                    "createdAt": 1.0,
+                    "ticker": "NEW_STOCK",
+                    "basePrice": 100.0,
+                    "prediction": 1.0,
+                    "selected": True,
+                }
+            ],
+        }
+
+        resolve_shadow_predictions(
+            state,
+            {"NEW_STOCK": 101.0},
+            now=2.0,
+            settings=settings,
+        )
+
+        self.assertEqual(len(state["outcomes"]), 1001)
+        self.assertEqual(state["outcomes"][0]["createdAt"], 0.0)
+
     def test_experiment_settings_define_sample_interval(self):
         settings = ExperimentSettings()
         self.assertTrue(hasattr(settings, "sample_interval_seconds"))
